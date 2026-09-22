@@ -43,11 +43,9 @@ if not st.session_state.authenticated:
 
     st.stop()
 
-from datetime import (
-    datetime,
-    timedelta,
-    time as dt_time
-)
+from datetime import datetime
+
+from sla import calculate_working_minutes, load_work_schedule
 
 st.set_page_config(
     page_title="SLA Dashboard",
@@ -111,13 +109,8 @@ TAKEN_BY_FIELD = st.secrets["TAKEN_BY_FIELD"]
 # Менеджери
 MANAGERS = st.secrets["MANAGERS"]
 
-# Робочі години
-WORK_START = dt_time(10, 0)
-WORK_END = dt_time(19, 0)
-
-# ОБІД
-LUNCH_START = dt_time(14, 0)
-LUNCH_END = dt_time(15, 0)
+# Робочі години: змінні середовища мають пріоритет над Streamlit Secrets.
+WORK_START, WORK_END, LUNCH_START, LUNCH_END = load_work_schedule(st.secrets)
 
 # API
 API_DELAY = 0.35
@@ -177,88 +170,6 @@ def minutes_to_human(minutes):
 # SLA LOGIC
 # =========================================================
 
-def calculate_working_minutes(start_dt, end_dt):
-
-    if start_dt >= end_dt:
-        return 1
-
-    total_minutes = 0
-
-    current_day = start_dt.date()
-
-    while current_day <= end_dt.date():
-
-        # =====================================
-        # WORK INTERVAL
-        # =====================================
-
-        work_start = datetime.combine(
-            current_day,
-            WORK_START
-        )
-
-        work_end = datetime.combine(
-            current_day,
-            WORK_END
-        )
-
-        actual_start = max(
-            start_dt.replace(tzinfo=None),
-            work_start
-        )
-
-        actual_end = min(
-            end_dt.replace(tzinfo=None),
-            work_end
-        )
-
-        if actual_start < actual_end:
-
-            delta = (
-                actual_end - actual_start
-            )
-
-            total_minutes += (
-                delta.total_seconds() / 60
-            )
-
-        # =====================================
-        # LUNCH EXCLUDE
-        # =====================================
-
-        lunch_start = datetime.combine(
-            current_day,
-            LUNCH_START
-        )
-
-        lunch_end = datetime.combine(
-            current_day,
-            LUNCH_END
-        )
-
-        overlap_start = max(
-            actual_start,
-            lunch_start
-        )
-
-        overlap_end = min(
-            actual_end,
-            lunch_end
-        )
-
-        if overlap_start < overlap_end:
-
-            lunch_delta = (
-                overlap_end - overlap_start
-            )
-
-            total_minutes -= (
-                lunch_delta.total_seconds() / 60
-            )
-
-        current_day += timedelta(days=1)
-
-    return max(1, round(total_minutes))
 
 # =========================================================
 # API
@@ -436,7 +347,12 @@ def find_stage_datetime(
 # =========================================================
 
 @st.cache_data(show_spinner=False)
-def run_analysis():
+def run_analysis(
+    work_start,
+    work_end,
+    lunch_start,
+    lunch_end
+):
 
     deals = get_all_deals()
 
@@ -555,7 +471,11 @@ def run_analysis():
                 taken_sla = (
                     calculate_working_minutes(
                         created_dt,
-                        taken_dt
+                        taken_dt,
+                        work_start,
+                        work_end,
+                        lunch_start,
+                        lunch_end
                     )
                 )
 
@@ -578,7 +498,11 @@ def run_analysis():
                 called_sla = (
                     calculate_working_minutes(
                         created_dt,
-                        called_dt
+                        called_dt,
+                        work_start,
+                        work_end,
+                        lunch_start,
+                        lunch_end
                     )
                 )
 
@@ -684,7 +608,12 @@ if run:
         "Аналізуємо SLA..."
     ):
 
-        df = run_analysis()
+        df = run_analysis(
+            WORK_START,
+            WORK_END,
+            LUNCH_START,
+            LUNCH_END
+        )
 
         st.session_state["df"] = df
 
