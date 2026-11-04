@@ -46,6 +46,7 @@ if not st.session_state.authenticated:
 from datetime import datetime
 
 from sla import calculate_working_minutes, load_work_schedule
+from anomalies import mark_anomalies, outlier_threshold
 
 st.set_page_config(
     page_title="SLA Dashboard",
@@ -86,6 +87,30 @@ run = st.sidebar.button(
 clear_cache = st.sidebar.button(
     "Очистити кеш",
     use_container_width=True
+)
+
+st.sidebar.divider()
+
+st.sidebar.subheader("Аномалії")
+
+EXCLUDE_ANOMALIES = st.sidebar.checkbox(
+    "Відсікати аномалії",
+    value=True,
+    help=(
+        "Аномально довгі угоди не враховуються в середньому, медіані "
+        "та графіках, але лишаються в таблиці угод з позначкою."
+    )
+)
+
+MANUAL_THRESHOLD = st.sidebar.number_input(
+    "Поріг аномалії, хв (0 — автоматично)",
+    min_value=0,
+    value=0,
+    step=10,
+    help=(
+        "Автоматичний поріг: 75-й перцентиль + 3 × міжквартильний "
+        "розмах (метод Тʼюкі), але не менше 30 хв."
+    )
 )
 
 st.title("📊 SLA Dashboard")
@@ -630,12 +655,50 @@ if "df" in st.session_state:
     # VALID DATA
     # =====================================
 
-    taken_valid = df[
-        df["Taken SLA Minutes"].notna()
+    # =====================================
+    # ANOMALIES
+    # =====================================
+
+    def anomaly_limit(values):
+        if MANUAL_THRESHOLD > 0:
+            return float(MANUAL_THRESHOLD)
+        return outlier_threshold(values)
+
+    taken_limit = anomaly_limit(df["Taken SLA Minutes"])
+    called_limit = anomaly_limit(df["Called SLA Minutes"])
+
+    df = df.copy()
+
+    df["Taken Anomaly"] = mark_anomalies(
+        df["Taken SLA Minutes"],
+        taken_limit
+    )
+
+    df["Called Anomaly"] = mark_anomalies(
+        df["Called SLA Minutes"],
+        called_limit
+    )
+
+    # Дані для статистики: аномальні значення прибираються,
+    # а самі угоди лишаються в df.
+    stats_df = df.copy()
+
+    if EXCLUDE_ANOMALIES:
+
+        stats_df.loc[
+            df["Taken Anomaly"], "Taken SLA Minutes"
+        ] = None
+
+        stats_df.loc[
+            df["Called Anomaly"], "Called SLA Minutes"
+        ] = None
+
+    taken_valid = stats_df[
+        stats_df["Taken SLA Minutes"].notna()
     ]
 
-    called_valid = df[
-        df["Called SLA Minutes"].notna()
+    called_valid = stats_df[
+        stats_df["Called SLA Minutes"].notna()
     ]
 
     # =====================================
@@ -739,6 +802,23 @@ if "df" in st.session_state:
             )
         )
 
+        def limit_text(limit):
+            if limit is None:
+                return "замало даних для порогу"
+            return f"поріг {minutes_to_human(limit)}"
+
+        st.caption(
+            (
+                "Аномалії відсічено зі статистики. "
+                if EXCLUDE_ANOMALIES
+                else "Відсікання аномалій вимкнено. "
+            )
+            + f"TAKEN: {int(df['Taken Anomaly'].sum())} "
+            + f"({limit_text(taken_limit)}); "
+            + f"CALLED: {int(df['Called Anomaly'].sum())} "
+            + f"({limit_text(called_limit)})."
+        )
+
         st.divider()
 
         fig = px.histogram(
@@ -785,7 +865,7 @@ if "df" in st.session_state:
 
         manager_df = (
 
-            df
+            stats_df
 
             .groupby("Manager")
 
@@ -824,6 +904,29 @@ if "df" in st.session_state:
             "Called Median",
             "Called Max"
         ]
+
+        anomaly_counts = (
+            df
+            .groupby("Manager")[["Taken Anomaly", "Called Anomaly"]]
+            .sum()
+            .astype(int)
+            .rename(columns={
+                "Taken Anomaly": "Taken Anomalies",
+                "Called Anomaly": "Called Anomalies"
+            })
+            .reset_index()
+        )
+
+        manager_df = manager_df.merge(
+            anomaly_counts,
+            on="Manager",
+            how="left"
+        )
+
+        # Числові значення для графіка (до перетворення в текст).
+        manager_chart = manager_df[
+            ["Manager", "Called Avg"]
+        ].copy()
 
         # =====================================
         # HUMAN FORMAT
@@ -868,7 +971,7 @@ if "df" in st.session_state:
 
         fig = px.bar(
 
-            manager_df,
+            manager_chart,
 
             x="Manager",
 
@@ -960,6 +1063,20 @@ if "df" in st.session_state:
 
         st.dataframe(
             long_sla,
+            use_container_width=True
+        )
+
+        anomalies_df = deals_df[
+            deals_df["Taken Anomaly"]
+            | deals_df["Called Anomaly"]
+        ]
+
+        st.subheader(
+            f"⚠️ Аномалії ({len(anomalies_df)})"
+        )
+
+        st.dataframe(
+            anomalies_df,
             use_container_width=True
         )
 
