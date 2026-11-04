@@ -219,7 +219,7 @@ def bitrix_request(method, data=None):
 # DEALS
 # =========================================================
 
-def get_all_deals():
+def get_all_deals(date_from, date_to):
 
     all_deals = []
 
@@ -234,10 +234,10 @@ def get_all_deals():
                 "CATEGORY_ID": FUNNEL_ID,
 
                 ">=DATE_CREATE":
-                    f"{DATE_FROM}T00:00:00",
+                    f"{date_from}T00:00:00",
 
                 "<=DATE_CREATE":
-                    f"{DATE_TO}T23:59:59"
+                    f"{date_to}T23:59:59"
             },
 
             "select": [
@@ -286,32 +286,33 @@ def get_all_deals():
 # HISTORY
 # =========================================================
 
-@st.cache_data(show_spinner=False)
-def get_stage_history(deal_id):
-
+@st.cache_data(show_spinner=False, ttl=600)
+def _load_stage_history(deal_id):
+    # Помилка API піднімається як виняток, тому не потрапляє в кеш.
     payload = {
-
         "entityTypeId": 2,
-
         "filter": {
             "OWNER_ID": deal_id
         }
     }
 
-    try:
-        result = bitrix_request(
-            "crm.stagehistory.list",
-            payload
-        )
-    except Exception:
-        return []
+    result = bitrix_request(
+        "crm.stagehistory.list",
+        payload
+    )
 
-    items = (
+    return (
         result.get("result", {})
         .get("items", [])
     )
 
-    return items
+
+def get_stage_history(deal_id):
+
+    try:
+        return _load_stage_history(deal_id)
+    except Exception:
+        return []
 
 
 def find_stage_datetime(
@@ -346,15 +347,17 @@ def find_stage_datetime(
 # ANALYSIS
 # =========================================================
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=600)
 def run_analysis(
+    date_from,
+    date_to,
     work_start,
     work_end,
     lunch_start,
     lunch_end
 ):
 
-    deals = get_all_deals()
+    deals = get_all_deals(date_from, date_to)
 
     rows = []
 
@@ -609,6 +612,8 @@ if run:
     ):
 
         df = run_analysis(
+            DATE_FROM,
+            DATE_TO,
             WORK_START,
             WORK_END,
             LUNCH_START,
